@@ -2,7 +2,7 @@
 
 CAD 図面（DWG / DXF）を、Web 地図（MapLibre GL JS）に**正しい位置で**重ねられる GeoJSON にするためのツール。
 
-> **状態: 開発中（Phase 1）。** DWG / DXF を読み、部分に分けて位置合わせし、WGS84 の GeoJSON にする CLI ができた。設計は [docs/design.md](docs/design.md)、dwg2geo の評価は [docs/eval-dwg2geo.md](docs/eval-dwg2geo.md)、調べた関連ツールは [docs/related-tools.md](docs/related-tools.md) にある。
+> **状態: 開発中（Phase 1 の CLI が完成。次は Phase 2 のブラウザ版）。** DWG / DXF を読み、部分の候補を出し、部分に分けて位置合わせし、WGS84 の GeoJSON にする CLI ができた。設計は [docs/design.md](docs/design.md)、dwg2geo の評価は [docs/eval-dwg2geo.md](docs/eval-dwg2geo.md)、調べた関連ツールは [docs/related-tools.md](docs/related-tools.md) にある。
 
 ## 方針
 
@@ -34,7 +34,10 @@ DXF ─ acadrust → DWG ──┘                                              
 # 1. 図面座標の GeoJSON にして、対応点の図面側の座標を QGIS などで拾う
 cad2geojson convert plan.dxf -o plan.local.geojson
 
-# 2. 対応点で位置合わせし、WGS84 の GeoJSON にする（入力は DWG / DXF / 図面座標の GeoJSON）
+# 2. 部分（1 階・2 階・図枠など）の候補を出し、名前と follow を書き足す
+cad2geojson parts plan.dxf -o parts.json
+
+# 3. 対応点で位置合わせし、WGS84 の GeoJSON にする（入力は DWG / DXF / 図面座標の GeoJSON）
 cad2geojson georef plan.dxf \
   --gcp gcp.csv --work-crs EPSG:6673 --units mm \
   --parts parts.json -o plan.geojson
@@ -47,6 +50,8 @@ part,cad_x,cad_y,map_x,map_y,role
 2F,39255.06,-65843.09,-90816.425,-63700.253,control
 2F,117327.53,-2802.34,-90806.444,-63798.360,control
 ```
+
+`parts` は、図形の無い帯（既定は図面の範囲の長辺の 3%。`--min-gap` で図面の単位で指定）で図面を再帰的に分け、上から順に `part1`, `part2`, … の候補にする。用紙の隅にある長方形（長い水平・垂直線で囲まれた領域）は表題欄とみなして `frame`（`place: false`）にし、ほぼすべての図形を囲む用紙の枠の線はどの部分にも入れない。図形の少ない塊（全体の 1% 未満）は `small1`, … として載せない。各候補の図形の数と中の文字（大きい順）を表示するので、それを見て名前を付ける。載せる候補どうしに共通する円があれば、`follow` で合わせられることを知らせる。ビッグシップの全体平面図では、表題欄・1 階・2 階の 3 つに分かれる。
 
 `parts.json`（図形は外接矩形の中心で、先に書いた部分から振り分ける。`place: false` の部分は出力しない）:
 

@@ -7,6 +7,7 @@ pub mod geojson;
 pub mod georef;
 pub mod part;
 pub mod relate;
+pub mod suggest;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

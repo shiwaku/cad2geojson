@@ -158,21 +158,34 @@ fn walk(v: &mut Value, f: &mut dyn FnMut(&mut [Value]) -> Result<(), Error>) -> 
 }
 
 pub(crate) fn bbox_center(geom: &Value) -> Option<[f64; 2]> {
+    bbox(geom).map(|b| [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0])
+}
+
+/// 外接矩形 [xmin, ymin, xmax, ymax]。
+pub(crate) fn bbox(geom: &Value) -> Option<[f64; 4]> {
     let mut b = [
         f64::INFINITY,
         f64::INFINITY,
         f64::NEG_INFINITY,
         f64::NEG_INFINITY,
     ];
+    for [x, y] in points(geom)? {
+        b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+    }
+    b[0].is_finite().then_some(b)
+}
+
+/// 位置の並び。折れ線は頂点の順に並ぶ。
+pub(crate) fn points(geom: &Value) -> Option<Vec<[f64; 2]>> {
+    let mut out = vec![];
     let mut g = geom.clone();
     map_coords(&mut g, &mut |c| {
         let (x, y) = xy(c)?;
-        b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+        out.push([x, y]);
         Ok(())
     })
     .ok()?;
-    b[0].is_finite()
-        .then(|| [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0])
+    Some(out)
 }
 
 /// 文字の回転角と文字高を、位置合わせに合わせて直す。

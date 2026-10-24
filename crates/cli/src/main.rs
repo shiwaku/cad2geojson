@@ -9,6 +9,7 @@ use cad2geojson_core::geojson::{self, Summary};
 use cad2geojson_core::georef::{self, Gcp, Record, Request, Role, ScaleMode};
 use cad2geojson_core::part::Part;
 use cad2geojson_core::relate;
+use cad2geojson_core::suggest::{self, Kind};
 use clap::{Args, Parser, Subcommand};
 use serde_json::Value;
 
@@ -28,6 +29,8 @@ enum Command {
     Apply(ApplyArgs),
     /// DWG / DXF を図面座標の GeoJSON にする（対応点の図面側の座標を拾うため）
     Convert(ConvertArgs),
+    /// 部分の候補（parts.json）を提案する。図形の無い帯で分け、用紙の隅の表題欄を載せない部分にする
+    Parts(PartsArgs),
 }
 
 /// 入力の図面。
@@ -90,11 +93,24 @@ struct ConvertArgs {
     output: PathBuf,
 }
 
+#[derive(Args)]
+struct PartsArgs {
+    #[command(flatten)]
+    input: Input,
+    /// 分ける境目とみなす、図形の無い帯の最小の幅（図面の単位）。既定は図面の範囲の長辺の 3%
+    #[arg(long)]
+    min_gap: Option<f64>,
+    /// 出力（parts.json）。無ければ標準出力
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Georef(a) => run_georef(a),
         Command::Apply(a) => run_apply(a),
         Command::Convert(a) => run_convert(a),
+        Command::Parts(a) => run_parts(a),
     }
 }
 
@@ -165,6 +181,88 @@ fn run_convert(a: ConvertArgs) -> Result<()> {
     fs::write(&a.output, s + "\n")
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     eprintln!("wrote {}", a.output.display());
+    Ok(())
+}
+
+fn run_parts(a: PartsArgs) -> Result<()> {
+    let gj = load_geojson(&a.input)?;
+    let opts = suggest::Options { min_gap: a.min_gap };
+    let s = suggest::suggest(&gj, &opts)?;
+    eprintln!("min gap: {} (drawing units)", s.min_gap);
+    for b in &s.borders {
+        eprintln!("sheet border {b:?}: its lines are left out of all parts");
+    }
+    for c in &s.candidates {
+        let kind = match c.kind {
+            Kind::TitleBlock => "title block, not placed",
+            Kind::Cluster => "placed",
+            Kind::Small => "few features, not placed",
+        };
+        let texts: Vec<&str> = c.texts.iter().take(5).map(String::as_str).collect();
+        eprintln!(
+            "{}: {} features ({kind}), bbox {:?}",
+            c.part.name,
+            c.features,
+            c.part.bbox.unwrap_or_default()
+        );
+        if !texts.is_empty() {
+            eprintln!("  texts: {}", texts.join(" / "));
+        }
+    }
+    let parts: Vec<Part> = s.candidates.iter().map(|c| c.part.clone()).collect();
+    print_follow_hints(&gj, &parts)?;
+    // 1 行に 1 部分（手で直しやすいように）
+    let lines = parts
+        .iter()
+        .map(|p| serde_json::to_string(p).map(|s| format!("    {s}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let out = format!(
+        "{{
+  \"parts\": [
+{}
+  ]
+}}
+",
+        lines.join(
+            ",
+"
+        )
+    );
+    match &a.output {
+        Some(p) => {
+            fs::write(p, out).with_context(|| format!("cannot write {}", p.display()))?;
+            eprintln!("wrote {}", p.display());
+        }
+        None => print!("{out}"),
+    }
+    eprintln!("rename the parts, and add \"follow\" where a part should be placed by another");
+    Ok(())
+}
+
+/// 載せる候補どうしで共通する円があれば、`follow` で合わせられることを知らせる。
+fn print_follow_hints(gj: &Value, parts: &[Part]) -> Result<()> {
+    let circles = relate::circles_by_part(gj, parts)?;
+    for (i, p) in parts.iter().enumerate().filter(|(_, p)| p.place) {
+        for (j, q) in parts
+            .iter()
+            .enumerate()
+            .skip(i + 1)
+            .filter(|(_, q)| q.place)
+        {
+            let Ok(r) = relate::relate(&circles[j], &circles[i], &p.name) else {
+                continue;
+            };
+            if r.runner_up * 2 <= r.pairs.len() {
+                eprintln!(
+                    "hint: {} and {} share {} circles (next best offset {}); one can follow the other",
+                    q.name,
+                    p.name,
+                    r.pairs.len(),
+                    r.runner_up
+                );
+            }
+        }
+    }
     Ok(())
 }
 

@@ -23,7 +23,7 @@ fn out_dir() -> PathBuf {
 }
 
 /// `georef` を回し、記録と出力の図形を返す。
-fn georef(dxf: &str, out: &Path) -> (Record, Vec<Value>) {
+fn georef(dxf: &str, parts: &Path, out: &Path) -> (Record, Vec<Value>) {
     let stem = dxf.trim_end_matches(".dxf");
     let output = out.join(format!("{stem}.geojson"));
     let record = out.join(format!("{stem}.georef.json"));
@@ -33,7 +33,7 @@ fn georef(dxf: &str, out: &Path) -> (Record, Vec<Value>) {
         .arg("--gcp")
         .arg(data("gcp.csv"))
         .arg("--parts")
-        .arg(data("parts.json"))
+        .arg(parts)
         .args(["--work-crs", gen_data::WORK_CRS, "--units", "mm", "-o"])
         .arg(&output)
         .arg("--record")
@@ -90,8 +90,8 @@ fn texts(features: &[Value]) -> BTreeSet<(String, String)> {
 #[test]
 fn r12_and_r2010_place_both_floors() {
     let out = out_dir();
-    let (r12, f12) = georef("plan_r12.dxf", &out);
-    let (r2010, f2010) = georef("plan_r2010.dxf", &out);
+    let (r12, f12) = georef("plan_r12.dxf", &data("parts.json"), &out);
+    let (r2010, f2010) = georef("plan_r2010.dxf", &data("parts.json"), &out);
     check_record(&r12);
     check_record(&r2010);
 
@@ -103,6 +103,62 @@ fn r12_and_r2010_place_both_floors() {
     assert_eq!(t, texts(&f2010));
     assert_eq!(f12.len(), f2010.len());
     assert!(f12.iter().all(|f| f["properties"]["layer"] != "図枠"));
+
+    std::fs::remove_dir_all(&out).unwrap();
+}
+
+/// `parts` の提案が、表題欄・2 階・1 階に分かれ、名前と `follow` を書き足すだけで位置合わせできる。
+#[test]
+fn suggested_parts_reproduce_the_georef() {
+    let out = out_dir().join("suggest");
+    std::fs::create_dir_all(&out).unwrap();
+    let suggested = out.join("parts.json");
+    let r = Command::new(env!("CARGO_BIN_EXE_cad2geojson"))
+        .arg("parts")
+        .arg(data("plan_r2010.dxf"))
+        .arg("-o")
+        .arg(&suggested)
+        .output()
+        .unwrap();
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let stderr = String::from_utf8_lossy(&r.stderr);
+    assert!(
+        stderr.contains("part2 and part1 share 24 circles"),
+        "{stderr}"
+    );
+
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&suggested).unwrap()).unwrap();
+    let parts = v["parts"].as_array().unwrap();
+    let names: Vec<&str> = parts.iter().map(|p| p["name"].as_str().unwrap()).collect();
+    // small1 は図枠の左上の注記（表題欄の外）
+    assert_eq!(names, ["frame", "small1", "part1", "part2"]);
+    assert_eq!(parts[0]["place"], false);
+    assert_eq!(parts[1]["place"], false);
+    // 表題欄・2 階・1 階の範囲が、それぞれの図形を囲む
+    let bbox = |i: usize| -> Vec<f64> {
+        parts[i]["bbox"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect()
+    };
+    let within =
+        |b: &[f64], p: [f64; 2]| b[0] <= p[0] && p[0] <= b[2] && b[1] <= p[1] && p[1] <= b[3];
+    assert!(within(&bbox(0), [41000.0, 6500.0]));
+    let corner = [gen_data::GRID_X[5], gen_data::GRID_Y[3]];
+    for (i, floor) in [(2, Floor::F2), (3, Floor::F1)] {
+        assert!(within(&bbox(i), floor.to_drawing([0.0, 0.0])));
+        assert!(within(&bbox(i), floor.to_drawing(corner)));
+    }
+
+    let renamed = std::fs::read_to_string(&suggested)
+        .unwrap()
+        .replace(r#""part1""#, r#""2F""#)
+        .replace(r#""part2""#, r#""1F","follow":"2F""#);
+    std::fs::write(&suggested, renamed).unwrap();
+    let (rec, _) = georef("plan_r2010.dxf", &suggested, &out);
+    check_record(&rec);
 
     std::fs::remove_dir_all(&out).unwrap();
 }
