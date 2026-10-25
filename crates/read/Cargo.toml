@@ -13,3 +13,6 @@ dwg2geo = { version = "=0.2.5", default-features = false, features = ["native-ba
 # 0.5.1 は R12 の DXF を読めない（Phase 0 で確認）
 acadrust.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+encoding_rs = "0.8"
