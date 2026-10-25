@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cad2geojson デモ</title>
+<meta name="description" content="CAD 図面（DWG）を位置合わせして Web 地図に重ねた例。オランダの集合住宅 Schependomlaan の設備図 16 枚。">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #59636e;
+    --line: #d1d9e0;
+    --accent: #0969da;
+    --chip: #f6f8fa;
+    --rio: #f97316;
+    --water: #0ea5e9;
+    --sparing: #ec4899;
+    --grid: #9ca3af;
+    --control: #16a34a;
+    --check: #facc15;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161b22;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --line: #3d444d;
+      --accent: #4493f8;
+      --chip: #212830;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161b22;
+    --fg: #e6edf3;
+    --muted: #9198a1;
+    --line: #3d444d;
+    --accent: #4493f8;
+    --chip: #212830;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 12px; left: 12px; width: 320px; max-height: calc(100% - 24px);
+    overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 4px 16px rgb(0 0 0 / 0.15); padding: 14px 16px; z-index: 2;
+  }
+  h1 { font-size: 16px; margin: 0 0 2px; }
+  h2 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 14px 0 6px; letter-spacing: 0.02em; }
+  p { margin: 0 0 8px; }
+  .lead { color: var(--muted); font-size: 13px; }
+  a { color: var(--accent); }
+  .seg { display: flex; flex-wrap: wrap; gap: 4px; }
+  .seg button {
+    flex: 1 0 auto; min-width: 44px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--chip); color: var(--fg); font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  label.row { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; }
+  label.row .count { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .swatch { width: 14px; height: 3px; border-radius: 2px; flex: none; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; margin: 0; }
+  .stats dt { color: var(--muted); }
+  .stats dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .note { font-size: 12px; color: var(--muted); }
+  #toggle { display: none; }
+  @media (max-width: 640px) {
+    #panel {
+      top: auto; bottom: 0; left: 0; right: 0; width: auto; max-height: 55%;
+      border-radius: 12px 12px 0 0; padding: 10px 16px 16px;
+    }
+    #panel.collapsed > :not(header) { display: none; }
+    #toggle {
+      display: block; margin-left: auto; padding: 2px 10px; border: 1px solid var(--line); border-radius: 6px;
+      background: var(--chip); color: var(--fg); font: inherit; font-size: 12px;
+    }
+    header { display: flex; align-items: center; gap: 8px; }
+    .maplibregl-ctrl-bottom-right { bottom: 56px; }
+  }
+</style>
+</head>
+<body>
+<div id="map" role="region" aria-label="地図"></div>
+<aside id="panel">
+  <header>
+    <h1>cad2geojson デモ</h1>
+    <button id="toggle" type="button" aria-expanded="true">閉じる</button>
+  </header>
+  <p class="lead">CAD 図面（DWG）を対応点で位置合わせし、Web 地図に重ねた例。オランダ・ナイメーヘンの集合住宅 Schependomlaan の設備図 16 枚を、1 階の図面の位置合わせの記録 1 つで載せている。</p>
+
+  <h2>階</h2>
+  <div class="seg" id="floors"></div>
+
+  <h2>図面</h2>
+  <div id="kinds"></div>
+
+  <h2>重ねるもの</h2>
+  <label class="row"><input type="checkbox" id="show-bag" checked><span class="swatch" style="background:#111;height:2px"></span>建物の外形（BAG）</label>
+  <label class="row"><input type="checkbox" id="show-gcp" checked><span class="dot" style="background:var(--control)"></span>対応点・検証点</label>
+
+  <h2>背景</h2>
+  <div class="seg" id="basemaps">
+    <button type="button" data-base="photo" aria-pressed="true">航空写真</button>
+    <button type="button" data-base="map" aria-pressed="false">地図</button>
+  </div>
+
+  <h2>位置合わせ</h2>
+  <dl class="stats" id="stats"></dl>
+  <p class="note">対応点は IFC の 1 階の外形（構造壁）の角と BAG の外形の角。残差がどれも建物の外向きなのは、BAG が外装（レンガ、約 0.3 m）の外側を測っているため。点を押すと残差が出る。</p>
+
+  <h2>出典</h2>
+  <p class="note">
+    図面: <a href="https://github.com/openBIMstandards/Archive-DataSetSchependomlaan">Schependomlaan dataset</a>（© original owners、<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>）。cad2geojson で位置合わせし、WGS84 の GeoJSON に変換した。<br>
+    建物の外形: <a href="https://www.kadaster.nl/zakelijk/registraties/basisregistraties/bag">BAG</a>（Kadaster、CC0）。背景: <a href="https://www.pdok.nl/">PDOK</a> の Luchtfoto・BRT Achtergrondkaart。<br>
+    <a href="https://github.com/shiwaku/cad2geojson">cad2geojson（GitHub）</a>
+  </p>
+</aside>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+"use strict";
+
+const FLOOR_NAMES = { Fund: "基礎", BG: "1 階", V1: "2 階", V2: "3 階", V3: "4 階", Dak: "屋根" };
+const KINDS = {
+  Rio_MV_Hwa: { label: "排水", color: "--rio" },
+  Water_Gas_CV: { label: "給水・ガス・暖房", color: "--water" },
+  Sparingen: { label: "開口", color: "--sparing" },
+};
+const GRID_LAYER = "New_A Stramien";
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// 文字の高さ（m）→ 画面の px。512 px タイルで、緯度 51.84° の 1 px は 48379 / 2^z m。
+// CAD の文字の高さは大文字の高さなので、フォントの大きさはその 1.43 倍。
+const PX_PER_M_Z18 = (2 ** 18 / 48379) * 1.43;
+const textSize = ["interpolate", ["exponential", 2], ["zoom"],
+  18, ["*", ["get", "text_height"], PX_PER_M_Z18],
+  24, ["*", ["get", "text_height"], PX_PER_M_Z18 * 64]];
+const ANCHORS = ["match", ["get", "text_attachment"],
+  "top-left", "top-left", "top-center", "top", "top-right", "top-right",
+  "middle-left", "left", "middle-center", "center", "middle-right", "right",
+  "bottom-left", "bottom-left", "bottom-center", "bottom", "bottom-right", "bottom-right",
+  "bottom-left"];
+
+const map = new maplibregl.Map({
+  container: "map",
+  center: [5.83625, 51.84195],
+  zoom: 19,
+  maxZoom: 24,
+  hash: true,
+  attributionControl: false,
+  style: {
+    version: 8,
+    glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+    sources: {
+      photo: {
+        type: "raster", tileSize: 256, maxzoom: 19,
+        tiles: ["https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg"],
+        attribution: "Luchtfoto: <a href=\"https://www.pdok.nl/\">PDOK</a> (Beeldmateriaal.nl)",
+      },
+      map: {
+        type: "raster", tileSize: 256, maxzoom: 19,
+        tiles: ["https://service.pdok.nl/brt/achtergrondkaart/wmts/v2_0/grijs/EPSG:3857/{z}/{x}/{y}.png"],
+        attribution: "BRT Achtergrondkaart: <a href=\"https://www.pdok.nl/\">PDOK</a> (Kadaster)",
+      },
+    },
+    layers: [
+      { id: "photo", type: "raster", source: "photo" },
+      { id: "map", type: "raster", source: "map", layout: { visibility: "none" } },
+    ],
+  },
+});
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-right");
+map.addControl(new maplibregl.ScaleControl({ maxWidth: 120 }), "bottom-left");
+map.addControl(new maplibregl.AttributionControl({
+  compact: true,
+  customAttribution: "図面: Schependomlaan dataset © original owners, <a href=\"https://creativecommons.org/licenses/by/4.0/\">CC BY 4.0</a>（cad2geojson で位置合わせ） · BAG: Kadaster (CC0)",
+}), "bottom-right");
+
+const state = { floor: "BG", kinds: new Set(["Rio_MV_Hwa", "Water_Gas_CV", "Sparingen"]), loaded: new Set() };
+let index;
+
+function fmt(v, digits = 2) { return v == null ? "—" : v.toFixed(digits); }
+
+function addDrawing(d) {
+  const color = css(KINDS[d.kind].color);
+  map.addSource(d.id, { type: "geojson", data: `data/${d.id}.geojson` });
+  const before = "bag-line";
+  map.addLayer({
+    id: `${d.id}-fill`, type: "fill", source: d.id,
+    filter: ["==", ["geometry-type"], "Polygon"],
+    paint: { "fill-color": color, "fill-opacity": 0.25 },
+  }, before);
+  const lines = ["in", ["geometry-type"], ["literal", ["LineString", "Polygon"]]];
+  const isGrid = ["==", ["get", "layer"], GRID_LAYER];
+  const width = ["interpolate", ["exponential", 2], ["zoom"], 18, 0.6, 22, 1.6];
+  // 破線は属性で切り替えられないので、通り芯は別のレイヤにする
+  map.addLayer({
+    id: `${d.id}-grid`, type: "line", source: d.id,
+    filter: ["all", lines, isGrid],
+    paint: { "line-color": css("--grid"), "line-width": width, "line-dasharray": [6, 3] },
+  }, before);
+  map.addLayer({
+    id: `${d.id}-line`, type: "line", source: d.id,
+    filter: ["all", lines, ["!", isGrid]],
+    paint: { "line-color": color, "line-width": width },
+  }, before);
+  map.addLayer({
+    id: `${d.id}-text`, type: "symbol", source: d.id, minzoom: 19,
+    filter: ["==", ["geometry-type"], "Point"],
+    layout: {
+      "text-field": ["get", "text"],
+      "text-font": ["Noto Sans Regular"],
+      "text-size": textSize,
+      "text-rotate": ["-", 0, ["coalesce", ["get", "text_rotation_deg"], 0]],
+      "text-rotation-alignment": "map",
+      "text-pitch-alignment": "map",
+      "text-anchor": ANCHORS,
+      "text-allow-overlap": true,
+      "text-ignore-placement": true,
+    },
+    paint: { "text-color": color, "text-halo-color": "rgba(255,255,255,0.85)", "text-halo-width": 1 },
+  }, before);
+  state.loaded.add(d.id);
+}
+
+function render() {
+  for (const d of index.drawings) {
+    const on = d.floor === state.floor && state.kinds.has(d.kind);
+    if (on && !state.loaded.has(d.id)) addDrawing(d);
+    if (!state.loaded.has(d.id)) continue;
+    for (const suffix of ["fill", "grid", "line", "text"]) {
+      map.setLayoutProperty(`${d.id}-${suffix}`, "visibility", on ? "visible" : "none");
+    }
+  }
+  for (const b of document.querySelectorAll("#floors button")) {
+    b.setAttribute("aria-pressed", String(b.dataset.floor === state.floor));
+  }
+  for (const row of document.querySelectorAll("#kinds label")) {
+    const d = index.drawings.find((x) => x.floor === state.floor && x.kind === row.dataset.kind);
+    row.querySelector(".count").textContent = d ? `${d.features.toLocaleString()} 図形` : "なし";
+    row.querySelector("input").disabled = !d;
+  }
+}
+
+function buildPanel() {
+  const floors = document.getElementById("floors");
+  for (const f of Object.keys(FLOOR_NAMES)) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.floor = f;
+    b.textContent = FLOOR_NAMES[f];
+    b.addEventListener("click", () => { state.floor = f; render(); });
+    floors.append(b);
+  }
+  const kinds = document.getElementById("kinds");
+  for (const [k, v] of Object.entries(KINDS)) {
+    const row = document.createElement("label");
+    row.className = "row";
+    row.dataset.kind = k;
+    row.innerHTML = `<input type="checkbox" checked><span class="swatch" style="background:var(${v.color})"></span>${v.label}<span class="count"></span>`;
+    row.querySelector("input").addEventListener("change", (e) => {
+      if (e.target.checked) state.kinds.add(k); else state.kinds.delete(k);
+      render();
+    });
+    kinds.append(row);
+  }
+  const g = index.georef;
+  document.getElementById("stats").innerHTML = `
+    <dt>作業用の座標系</dt><dd>RD New（${g.work_crs}）、縮尺 1（単位 m）</dd>
+    <dt>回転</dt><dd>${fmt(g.rotation_deg, 2)}°</dd>
+    <dt>対応点</dt><dd>${g.control} 点、残差 RMS ${fmt(g.control_error?.rms)} m</dd>
+    <dt>検証点</dt><dd>${g.check} 点、RMS ${fmt(g.check_error?.rms)} m・最大 ${fmt(g.check_error?.max)} m</dd>`;
+
+  document.getElementById("show-bag").addEventListener("change", (e) => {
+    map.setLayoutProperty("bag-line", "visibility", e.target.checked ? "visible" : "none");
+  });
+  document.getElementById("show-gcp").addEventListener("change", (e) => {
+    for (const id of ["gcp-residual", "gcp-point"]) {
+      map.setLayoutProperty(id, "visibility", e.target.checked ? "visible" : "none");
+    }
+  });
+  for (const b of document.querySelectorAll("#basemaps button")) {
+    b.addEventListener("click", () => {
+      for (const o of document.querySelectorAll("#basemaps button")) {
+        const on = o === b;
+        o.setAttribute("aria-pressed", String(on));
+        map.setLayoutProperty(o.dataset.base, "visibility", on ? "visible" : "none");
+      }
+    });
+  }
+  const panel = document.getElementById("panel");
+  const toggle = document.getElementById("toggle");
+  toggle.addEventListener("click", () => {
+    const collapsed = panel.classList.toggle("collapsed");
+    toggle.textContent = collapsed ? "開く" : "閉じる";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  });
+}
+
+map.on("load", async () => {
+  index = await (await fetch("data/index.json")).json();
+  map.addSource("bag", { type: "geojson", data: "data/bag.geojson" });
+  map.addLayer({
+    id: "bag-line", type: "line", source: "bag",
+    paint: { "line-color": "#111", "line-width": 2, "line-dasharray": [3, 2] },
+  });
+  map.addSource("gcp", { type: "geojson", data: "data/gcp.geojson" });
+  const roleColor = ["match", ["get", "role"], "control", css("--control"), css("--check")];
+  map.addLayer({
+    id: "gcp-residual", type: "line", source: "gcp",
+    filter: ["==", ["geometry-type"], "LineString"],
+    paint: { "line-color": roleColor, "line-width": 2 },
+  });
+  map.addLayer({
+    id: "gcp-point", type: "circle", source: "gcp",
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: {
+      "circle-color": roleColor, "circle-radius": 5,
+      "circle-stroke-color": "#fff", "circle-stroke-width": 1.5,
+    },
+  });
+  map.on("click", "gcp-point", (e) => {
+    const p = e.features[0].properties;
+    new maplibregl.Popup({ closeButton: false })
+      .setLngLat(e.lngLat)
+      .setText(`${p.role === "control" ? "対応点" : "検証点"}: 残差 ${Number(p.residual_m).toFixed(3)} m`)
+      .addTo(map);
+  });
+  map.on("mouseenter", "gcp-point", () => { map.getCanvas().style.cursor = "pointer"; });
+  map.on("mouseleave", "gcp-point", () => { map.getCanvas().style.cursor = ""; });
+  buildPanel();
+  render();
+});
+</script>
+</body>
+</html>
