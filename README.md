@@ -99,6 +99,12 @@ DWG は Autodesk の独自バイナリ形式で、仕様は公開されていな
 - 直接読めない DWG は、ODA File Converter（無料）で DXF に変換してから読む経路を案内する
 - 「DWG」の名称は Autodesk との商標問題の経緯があるため、「DWG ファイルを読み込める」という説明的な表現にとどめ、公式対応を連想させる書き方はしない
 
+## デモ
+
+<https://shiwaku.github.io/cad2geojson/> に、オランダの集合住宅 Schependomlaan（CC BY 4.0）の設備図 16 枚を位置合わせして航空写真に重ねた地図がある。1 階の図面を建物の外形（BAG）の角で位置合わせし、同じ記録を残り 15 枚に適用した。対応点・検証点とその残差も表示する。
+
+`demo/build.sh` が DWG の取得から変換までを行い、GitHub Actions（`.github/workflows/pages.yml`）が main への push ごとに作り直す。手元では `cargo build --release -p cad2geojson && demo/build.sh` で `demo/dist` にでき、`python3 -m http.server -d demo/dist` などで開ける。
+
 ## 検証データ
 
 取得元・取得手順・利用条件は [testdata/README.md](testdata/README.md) に書く。第三者の図面は同梱しない。
