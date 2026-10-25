@@ -328,7 +328,8 @@ mod tests {
         assert_eq!(p.name, "V1");
         assert_eq!(p.path, PathBuf::from(r"C:\data\v1.dwg"));
         assert_eq!((p.rotation_deg, p.translation), (0.2, [50.0, -3.0]));
-        let p = Placement::parse(r"C:\data\SONSBEEK-BG Rio+MV+Hwa.dwg").unwrap();
+        // 名前の既定はファイル名（区切りが OS で違うので / で書く）
+        let p = Placement::parse("data/SONSBEEK-BG Rio+MV+Hwa.dwg").unwrap();
         assert_eq!(p.name, "SONSBEEK-BG Rio+MV+Hwa");
         assert!(p.is_identity());
         // 数が 3 つそろわなければパスの一部とみなす
