@@ -224,7 +224,7 @@ DWG は Autodesk の独自バイナリ形式で、仕様は公開されていな
 | G空間情報センター 鳥取県「空中写真（オルソ画像）」 | 位置合わせの基準 | 公共データ利用規約 第 1.0 版。[aerial-photo-tile-pipeline](https://github.com/shiwaku/aerial-photo-tile-pipeline) でタイル化 |
 | Autodesk の AutoCAD サンプル（建築系 DWG） | 本物の AutoCAD が書いた DWG | 手元のみ |
 | BODIK の自治体基本図 DXF（北九州市・鹿児島市など）、神奈川県の等高線 DXF | 座標付き図面。公開デモ・CI | CC BY |
-| Schependomlaan（オランダ・ナイメーヘンの集合住宅。設備業者の DWG 16 本と IFC） | 実在の建物の DWG、海外の座標系（RD New）での位置合わせ、IFC | CC BY 4.0。公開デモに使える |
+| Schependomlaan（オランダ・ナイメーヘンの集合住宅。設備業者の DWG 16 本と IFC） | 実在の建物の DWG、海外の座標系（RD New）での位置合わせ、IFC。`tools/stack_sheets` で 2 つの階を 1 枚に並べ、部分分け・`follow` の答え合わせ | CC BY 4.0。公開デモに使える |
 
 | テスト | 内容 | 合格条件 |
 |---|---|---|

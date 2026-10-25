@@ -1,0 +1,14 @@
+[package]
+name = "cad2geojson-stack-sheets"
+description = "Place several drawings on one sheet with known rotations and offsets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+acadrust.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true

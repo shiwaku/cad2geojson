@@ -92,6 +92,26 @@ curl -sfL -o "ifc/IFC Schependomlaan.ifc" "$R/Design%20model%20IFC/IFC%20Schepen
 - 回転 21.24°、対応点の残差 RMS 0.29 m、検証点の RMS 0.30 m・最大 0.40 m。残差はどれも建物の外向きで、BAG（外装の外側）と IFC の外形（構造壁）の差（レンガの外装、約 0.3 m）と合う
 - 同じ記録を `apply` で残り 15 本に適用できた。航空写真に重ねて、通り芯と外形が建物に合うことを目で確かめた
 
+#### 2 つの階を 1 枚に並べる（部分分け・`follow` の確認）
+
+階ごとに別のファイルなので、そのままでは部分分けと `follow` を確かめられない。`tools/stack_sheets` で、1 階（BG）はそのまま、2 階（V1）は 0.2° 回して x 方向に 50 m ずらして 1 枚の DWG にする。本物の CAD が書いた図形のまま、答えが分かっている複数階の図面になる。対応点（上の 1 階の角）は元の DWG の座標で書き、ツールが並べた図面の座標に直す（V1 も原点が同じなので同じ角を検証点に使える）。
+
+```bash
+D=testdata/real/schependomlaan/dwg
+cargo run --release -p cad2geojson-stack-sheets -- -o sheet.dwg --gcp gcp_src.csv \
+  "BG=$D/SONSBEEK-BG Rio+MV+Hwa.dwg" "V1=$D/SONSBEEK-V1 Rio+MV+Hwa.dwg:0.2:50:0"
+# sheet.dwg.truth.json（答え）と sheet.dwg.gcp.csv（並べた図面の座標の対応点）もできる
+cad2geojson parts sheet.dwg -o parts.json
+cad2geojson georef sheet.dwg --gcp sheet.dwg.gcp.csv --work-crs EPSG:28992 --units m --parts parts.json -o sheet.geojson
+```
+
+確認した結果（2026-10-25）:
+
+- 並べた DWG の図形の数は、種類ごとに元の 2 本の合計と一致した（8,744 = 3,973 + 4,771）。V1 の寸法 16 個とブロック `COMPLEXOBJECT_0〜7` は展開し、通り芯の記号のブロック `NSY101`（40 個）は BG と同じ中身なのでそのまま残した
+- `parts` は 1 階・2 階を分け、各階の凡例（`CV` `GAS` `WW` `KW` `MV`、14 図形）を図形の少ない塊として外した。「共通する円 72 個（2 番目の平行移動は 12 個）」と知らせた
+- `follow`（V1 を BG に合わせる）の変換は答えと一致した（回転 21.0410°、平行移動の差 0）。V1 の検証点の RMS 0.305 m は BG の位置合わせの誤差（BAG と IFC の外形の差）と同じ
+- 合成の図面では出ない癖が 2 つあった。共通する円 72 個の中身は、半径ほぼ 0（5×10⁻¹¹ m）の円 40 個と半径 0.03 m の円 32 個で、同じ位置に重なった円が多く、異なる組は 32 しかなかった。図面をそのまま複製したので半径 0 の円も一致したが、別々に描いた階では一致しない
+
 ## 測量図面（座標付き）
 
 ### BODIK に登録された自治体の基本図・地形図 DXF（CC BY）
