@@ -289,10 +289,24 @@ fn solve_part(
 mod tests {
     use super::*;
 
-    /// 評価（docs/eval-dwg2geo.md §2.7.2）で求めたビッグシップ 2 階の変換を再現する。
-    /// 対応点は円形レストランと大ホールの中心（図面は dwg2geo の図面座標 mm、地図は EPSG:6673）。
+    /// 既知の変換で作った対応点から、その変換を求め直す。回転は大きく負（−123°）、図面は mm、
+    /// 地図は平面直角座標系で原点から遠い（建物の全体平面図を航空写真に合わせるときと同じ形）。
     #[test]
-    fn reproduces_bigship_2f() {
+    fn recovers_a_known_transform() {
+        let truth = Similarity {
+            scale: 0.001,
+            rotation_deg: -123.11,
+            translation: [-90739.918, -63702.478],
+        };
+        let gcp = |cad: [f64; 2], role| {
+            let (x, y) = truth.apply(cad[0], cad[1]);
+            Gcp {
+                part: "2F".into(),
+                cad,
+                map: [x, y],
+                role,
+            }
+        };
         let req = Request {
             parts: vec![Part {
                 name: "2F".into(),
@@ -302,18 +316,9 @@ mod tests {
                 follow: None,
             }],
             gcps: vec![
-                Gcp {
-                    part: "2F".into(),
-                    cad: [39255.06113716711, -65843.08762799996],
-                    map: [-90816.4248194886, -63700.25321872406],
-                    role: Role::Control,
-                },
-                Gcp {
-                    part: "2F".into(),
-                    cad: [117327.5343510328, -2802.344254158455],
-                    map: [-90806.44423830819, -63798.36034277245],
-                    role: Role::Control,
-                },
+                gcp([39255.061, -65843.088], Role::Control),
+                gcp([117327.534, -2802.344], Role::Control),
+                gcp([80000.0, -30000.0], Role::Check),
             ],
             gcp_crs: Crs::from_epsg(6673).unwrap(),
             work_crs: Crs::from_epsg(6673).unwrap(),
@@ -323,16 +328,20 @@ mod tests {
         let r = solve(&req).unwrap();
         let t = r.parts[0].transform.unwrap();
         assert!(
-            (t.rotation_deg - -123.11084085147061).abs() < 0.01,
+            (t.rotation_deg - truth.rotation_deg).abs() < 1e-9,
             "{}",
             t.rotation_deg
         );
-        assert!((t.translation[0] - -90739.91785442147).abs() < 0.01);
-        assert!((t.translation[1] - -63702.477928490385).abs() < 0.01);
-        assert!(r.parts[0].control_error.unwrap().rms < 1.0);
-        // 2 点の相似変換では縮尺が 1.7% 小さく出る（屋根の倒れ込み）
+        for k in 0..2 {
+            assert!(
+                (t.translation[k] - truth.translation[k]).abs() < 1e-6,
+                "{t:?}"
+            );
+        }
+        assert!(r.parts[0].control_error.unwrap().max < 1e-6);
+        assert!(r.parts[0].check_error.unwrap().max < 1e-6);
         let fs = r.parts[0].free_scale.unwrap();
-        assert!((fs / 0.001 - 0.983).abs() < 0.005, "{fs}");
+        assert!((fs - truth.scale).abs() < 1e-12, "{fs}");
 
         let back = Record::from_json(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back, r);

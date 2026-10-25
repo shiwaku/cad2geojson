@@ -197,6 +197,7 @@ fn run_parts(a: PartsArgs) -> Result<()> {
             Kind::TitleBlock => "title block, not placed",
             Kind::Cluster => "placed",
             Kind::Small => "few features, not placed",
+            Kind::Stray => "far from the drawing, not placed",
         };
         let texts: Vec<&str> = c.texts.iter().take(5).map(String::as_str).collect();
         eprintln!(

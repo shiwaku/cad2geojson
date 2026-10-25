@@ -4,6 +4,10 @@
 //! 2. ほぼすべての図形を囲む長方形は用紙の枠とみなし、その線は候補に入れない
 //! 3. 用紙（枠が無ければ図面全体の範囲）の隅にある長方形は表題欄とみなし、載せない候補にする
 //! 4. 残りの図形を、図形の無い帯（すき間）で再帰的に分ける（XY-cut）
+//!
+//! その前に、本体から遠く離れた少数の図形（原点に残った点、壊れた座標など）を外す。図面の範囲を
+//! 膨らませ、すき間の既定の幅と長方形の辺の長さの基準を狂わせるため。外した図形は消さず、
+//! 載せない候補にする。
 
 use serde_json::Value;
 
@@ -28,6 +32,12 @@ const TOL_RATIO: f64 = 1e-3;
 const BORDER_SHARE: f64 = 0.95;
 /// 載せる候補にする最少の図形の割合。これより少ない塊は載せない候補にする（はみ出した注記など）。
 const MIN_SHARE: f64 = 0.01;
+/// 本体から遠い図形とみなす距離（図形の中心の四分位の幅に対する比）。
+const STRAY_FACTOR: f64 = 3.0;
+/// 遠い図形として外す最大の割合。これを超えて遠くにあるなら、そちらも図面の一部とみなす（図面が並ぶ配置など）。
+const STRAY_MAX_SHARE: f64 = 0.01;
+/// 四分位の統計を使う最少の図形の数。
+const STRAY_MIN_FEATURES: usize = 20;
 
 /// 部分の候補。
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +58,8 @@ pub enum Kind {
     Cluster,
     /// 図形の少ない塊
     Small,
+    /// 本体から遠く離れた図形
+    Stray,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,7 +81,7 @@ pub fn suggest(input: &Value, opts: &Options) -> Result<Suggestion, Error> {
         .and_then(Value::as_array)
         .ok_or_else(|| Error::GeoJson("input is not a FeatureCollection".into()))?;
     let mut fs = vec![];
-    let mut segments = vec![];
+    let mut geoms = vec![];
     for f in features {
         let Some(geom) = f.get("geometry").filter(|g| !g.is_null()) else {
             continue;
@@ -90,23 +102,33 @@ pub fn suggest(input: &Value, opts: &Options) -> Result<Suggestion, Error> {
             .and_then(|p| p.get("entity_type"))
             .and_then(Value::as_str)
             .is_some_and(|t| matches!(t, "CIRCLE" | "ARC" | "ELLIPSE" | "SPLINE"));
-        if !curve {
-            push_segments(geom, &mut segments)?;
-        }
+        geoms.push((!curve).then_some(geom));
         fs.push(Feature { bbox: b, text });
     }
     if fs.is_empty() {
         return Err(Error::GeoJson("drawing has no features".into()));
     }
-    let extent = fs.iter().fold(fs[0].bbox, |a, f| union(a, f.bbox));
+    let centers: Vec<[f64; 2]> = fs.iter().map(|f| center(f.bbox)).collect();
+    let strays = strays(&centers);
+    let body: Vec<usize> = (0..fs.len()).filter(|i| !strays.contains(i)).collect();
+    let mut segments = vec![];
+    for &i in &body {
+        if let Some(geom) = geoms[i] {
+            push_segments(geom, &mut segments)?;
+        }
+    }
+    let extent = body
+        .iter()
+        .map(|&i| fs[i].bbox)
+        .reduce(union)
+        .expect("strays are a minority");
     let size = (extent[2] - extent[0]).max(extent[3] - extent[1]).max(1e-9);
     let tol = size * TOL_RATIO;
     let min_gap = opts.min_gap.unwrap_or(size * MIN_GAP_RATIO);
 
     let rects = rectangles(&segments, size * MIN_SIDE_RATIO, tol);
-    let centers: Vec<[f64; 2]> = fs.iter().map(|f| center(f.bbox)).collect();
     let share = |r: &[f64; 4]| {
-        centers.iter().filter(|c| inside(r, **c, tol)).count() as f64 / fs.len() as f64
+        body.iter().filter(|&&i| inside(r, centers[i], tol)).count() as f64 / body.len() as f64
     };
     let (borders, others): (Vec<[f64; 4]>, Vec<[f64; 4]>) =
         rects.into_iter().partition(|r| share(r) >= BORDER_SHARE);
@@ -127,7 +149,8 @@ pub fn suggest(input: &Value, opts: &Options) -> Result<Suggestion, Error> {
     let on_border = |b: &[f64; 4]| borders.iter().any(|r| on_edge(b, r, tol));
     let mut rest = vec![];
     let mut title_members = vec![vec![]; titles.len()];
-    for (i, f) in fs.iter().enumerate() {
+    for &i in &body {
+        let f = &fs[i];
         if let Some(t) = titles.iter().position(|r| inside(r, centers[i], tol)) {
             title_members[t].push(i);
         } else if !on_border(&f.bbox) {
@@ -172,11 +195,44 @@ pub fn suggest(input: &Value, opts: &Options) -> Result<Suggestion, Error> {
         let kind = if small { Kind::Small } else { Kind::Cluster };
         candidates.push(candidate(name, b, m, &fs, !small, kind));
     }
+    for (k, &i) in strays.iter().enumerate() {
+        let b = pad(fs[i].bbox, tol);
+        candidates.push(candidate(
+            format!("stray{}", k + 1),
+            b,
+            &[i],
+            &fs,
+            false,
+            Kind::Stray,
+        ));
+    }
     Ok(Suggestion {
         candidates,
         borders,
         min_gap,
     })
+}
+
+/// 本体から遠く離れた図形。中心の中央値から、四分位の幅の [`STRAY_FACTOR`] 倍より遠いもの。
+/// 平均や最大を使うと遠い図形そのものに引きずられるので、中央値と四分位を使う。
+fn strays(centers: &[[f64; 2]]) -> Vec<usize> {
+    if centers.len() < STRAY_MIN_FEATURES {
+        return vec![];
+    }
+    let quartiles = |axis: usize| {
+        let mut v: Vec<f64> = centers.iter().map(|c| c[axis]).collect();
+        v.sort_by(f64::total_cmp);
+        let n = v.len();
+        (v[n / 4], v[n / 2], v[3 * n / 4])
+    };
+    let (x1, mx, x3) = quartiles(0);
+    let (y1, my, y3) = quartiles(1);
+    let limit = (x3 - x1).max(y3 - y1).max(1e-9) * STRAY_FACTOR;
+    let far: Vec<usize> = (0..centers.len())
+        .filter(|&i| (centers[i][0] - mx).abs() > limit || (centers[i][1] - my).abs() > limit)
+        .collect();
+    let max = ((centers.len() as f64 * STRAY_MAX_SHARE) as usize).max(1);
+    if far.len() <= max { far } else { vec![] }
 }
 
 fn candidate(
@@ -448,6 +504,42 @@ mod tests {
             .map(|c| c.part.name.as_str())
             .collect();
         assert_eq!(parts, ["part1"]);
+    }
+
+    /// 遠く離れた図形があっても、範囲とすき間の幅が膨らまず、同じ候補になる。
+    #[test]
+    fn stray_features_do_not_inflate_the_extent() {
+        let mut v = sheet();
+        let fs = v["features"].as_array_mut().unwrap();
+        // 図形は 137 なので、外せるのは 1 つ（1%）
+        fs.push(line([1e9, 1e9], [1e9 + 1.0, 1e9]));
+        let s = suggest(&v, &Options::default()).unwrap();
+        let base = suggest(&sheet(), &Options::default()).unwrap();
+        assert_eq!(s.min_gap, base.min_gap);
+        assert_eq!(s.borders, base.borders);
+        let names: Vec<&str> = s.candidates.iter().map(|c| c.part.name.as_str()).collect();
+        assert_eq!(names, ["frame", "small1", "part1", "part2", "stray1"]);
+        assert_eq!(s.candidates[..4], base.candidates[..]);
+        assert!(
+            s.candidates[4..]
+                .iter()
+                .all(|c| c.kind == Kind::Stray && !c.part.place)
+        );
+    }
+
+    /// 遠くにある図形が多ければ、図面の一部とみなして外さない。
+    #[test]
+    fn many_far_features_are_kept() {
+        let mut v = sheet();
+        let fs = v["features"].as_array_mut().unwrap();
+        for k in 0..10 {
+            fs.push(line(
+                [1e6 + k as f64 * 10.0, 0.0],
+                [1e6 + k as f64 * 10.0, 5.0],
+            ));
+        }
+        let s = suggest(&v, &Options::default()).unwrap();
+        assert!(s.candidates.iter().all(|c| c.kind != Kind::Stray));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! 位置合わせの答えが分かっている合成の図面を作る。
 //!
-//! 1 枚の図面に 1 階・2 階・図枠を並べる（ビッグシップの全体平面図と同じ構成）。両階は同じ建物なので
+//! 1 枚の図面に 1 階・2 階・図枠を並べる（実在の建物の全体平面図によくある構成）。両階は同じ建物なので
 //! 柱（円）の位置が共通で、1 階は 2 階に対して少し回転して描かれている。2 階の図面座標から作業用の
 //! 投影座標系への変換（[`TRUTH`]）を決めておき、対応点・検証点の地図側の座標をそこから計算する。
 //!
@@ -8,6 +8,10 @@
 //!
 //! - `plan_r12.dxf`: R12（AC1009）、文字は cp932、`$DWGCODEPAGE` なし（Jw_cad が書き出す DXF と同じ形）
 //! - `plan_r2010.dxf`: R2010（AC1024）、文字は UTF-8（acadrust で書く）
+//! - `plan_r2018.dwg`: R2018（AC1032）の DWG（acadrust で書く）
+//! - `plan_utf8_bom.dxf`: R12 で `$DWGCODEPAGE` は `ANSI_932` なのに、文字は UTF-8 で先頭に BOM がある
+//!   （cp932 の DXF をテキストエディタで UTF-8 にして保存し直したもの、記録を残したまま UTF-8 で書く変換器）
+//! - `plan_stray.dxf`: R2010 に、本体から 500 km 離れた線を 1 本足したもの（原点や壊れた座標に残った図形）
 //! - `parts.json`: 図枠（載せない）・2 階・1 階（2 階に合わせる）
 //! - `gcp.csv`: 2 階の対応点 2 点と検証点 2 点、1 階の検証点 3 点
 
@@ -16,7 +20,7 @@ use std::path::Path;
 
 use acadrust::entities::{Circle, EntityType, Line, Text};
 use acadrust::types::{DxfVersion, Vector3};
-use acadrust::{CadDocument, DxfWriter, Layer};
+use acadrust::{CadDocument, DwgWriter, DxfWriter, Layer};
 
 /// 作業用の投影座標系（平面直角座標系 IX 系、JGD2011）。
 pub const WORK_CRS: &str = "EPSG:6677";
@@ -291,6 +295,19 @@ pub fn entities() -> Vec<Entity> {
     out
 }
 
+/// 本体から遠く離れた線（図面座標、mm）。
+pub const STRAY_AT: [f64; 2] = [5.0e8, 5.0e8];
+
+/// [`entities`] に、本体から遠く離れた線を 1 本足したもの。
+pub fn entities_with_stray() -> Vec<Entity> {
+    let mut out = entities();
+    out.push(Entity {
+        layer: LAYER_WALL,
+        shape: Shape::Line(STRAY_AT, [STRAY_AT[0] + 1000.0, STRAY_AT[1]]),
+    });
+    out
+}
+
 /// 部分の定義。図枠をレイヤで先に取り、残りを範囲で 2 階・1 階に分ける。
 pub fn parts_json() -> String {
     r#"{
@@ -336,16 +353,34 @@ pub fn gcp_csv() -> String {
 
 /// R12 の DXF。Jw_cad と同じく、文字は cp932 で `$DWGCODEPAGE` を書かない。改行は CRLF。
 pub fn dxf_r12() -> Vec<u8> {
-    let es = entities();
+    let s = r12_text(&entities(), None);
+    let (bytes, _, unmappable) = encoding_rs::SHIFT_JIS.encode(&s);
+    assert!(!unmappable, "text not representable in cp932");
+    bytes.into_owned()
+}
+
+/// R12 の DXF。`$DWGCODEPAGE` は `ANSI_932` なのに、文字は UTF-8 で先頭に BOM がある。
+pub fn dxf_utf8_bom() -> Vec<u8> {
+    let mut out = b"\xEF\xBB\xBF".to_vec();
+    out.extend(r12_text(&entities(), Some("ANSI_932")).into_bytes());
+    out
+}
+
+/// R12 の DXF の中身（文字コードにする前）。
+fn r12_text(es: &[Entity], code_page: Option<&str>) -> String {
     let mut s = String::new();
     let mut g = |code: i32, v: &str| {
         write!(s, "{code:>3}\r\n{v}\r\n").unwrap();
     };
-    let (min, max) = extents(&es);
+    let (min, max) = extents(es);
     g(0, "SECTION");
     g(2, "HEADER");
     g(9, "$ACADVER");
     g(1, "AC1009");
+    if let Some(c) = code_page {
+        g(9, "$DWGCODEPAGE");
+        g(3, c);
+    }
     g(9, "$INSBASE");
     g(10, "0");
     g(20, "0");
@@ -384,7 +419,7 @@ pub fn dxf_r12() -> Vec<u8> {
     g(0, "ENDSEC");
     g(0, "SECTION");
     g(2, "ENTITIES");
-    for e in &es {
+    for e in es {
         match &e.shape {
             Shape::Line(a, b) => {
                 g(0, "LINE");
@@ -420,21 +455,40 @@ pub fn dxf_r12() -> Vec<u8> {
     }
     g(0, "ENDSEC");
     g(0, "EOF");
-    let (bytes, _, unmappable) = encoding_rs::SHIFT_JIS.encode(&s);
-    assert!(!unmappable, "text not representable in cp932");
-    bytes.into_owned()
+    s
 }
 
 /// R2010 の DXF（acadrust で書く。文字は UTF-8）。
 pub fn dxf_r2010() -> Vec<u8> {
-    let mut doc = CadDocument::with_version(DxfVersion::AC1024);
+    write_dxf(&document(&entities(), DxfVersion::AC1024))
+}
+
+/// R2010 の DXF に、本体から遠く離れた線を 1 本足したもの。
+pub fn dxf_stray() -> Vec<u8> {
+    write_dxf(&document(&entities_with_stray(), DxfVersion::AC1024))
+}
+
+/// R2018 の DWG（acadrust で書く）。
+pub fn dwg_r2018() -> Vec<u8> {
+    DwgWriter::write_to_vec(&document(&entities(), DxfVersion::AC1032))
+        .expect("DWG written to memory")
+}
+
+fn write_dxf(doc: &CadDocument) -> Vec<u8> {
+    DxfWriter::new(doc)
+        .write_to_vec()
+        .expect("DXF written to memory")
+}
+
+fn document(es: &[Entity], version: DxfVersion) -> CadDocument {
+    let mut doc = CadDocument::with_version(version);
     for (name, color) in LAYERS {
         let mut l = Layer::new(name);
         l.color = acadrust::types::Color::from_index(color);
         doc.layers.add(l).expect("unique layer names");
     }
     let v = |p: [f64; 2]| Vector3::new(p[0], p[1], 0.0);
-    for e in entities() {
+    for e in es.iter().cloned() {
         let mut ent = match e.shape {
             Shape::Line(a, b) => EntityType::Line(Line::from_points(v(a), v(b))),
             Shape::Circle(c, r) => EntityType::Circle(Circle::from_center_radius(v(c), r)),
@@ -453,9 +507,7 @@ pub fn dxf_r2010() -> Vec<u8> {
         ent.common_mut().layer = e.layer.to_string();
         doc.add_entity(ent).expect("entity accepted");
     }
-    DxfWriter::new(&doc)
-        .write_to_vec()
-        .expect("DXF written to memory")
+    doc
 }
 
 /// 書き出すファイル（名前, 中身）。
@@ -463,6 +515,9 @@ pub fn files() -> Vec<(&'static str, Vec<u8>)> {
     vec![
         ("plan_r12.dxf", dxf_r12()),
         ("plan_r2010.dxf", dxf_r2010()),
+        ("plan_r2018.dwg", dwg_r2018()),
+        ("plan_utf8_bom.dxf", dxf_utf8_bom()),
+        ("plan_stray.dxf", dxf_stray()),
         ("parts.json", parts_json().into_bytes()),
         ("gcp.csv", gcp_csv().into_bytes()),
     ]
@@ -549,5 +604,20 @@ mod tests {
         assert!(std::str::from_utf8(&b).is_err());
         let s = String::from_utf8_lossy(&b);
         assert!(s.contains("AC1009") && !s.contains("$DWGCODEPAGE"));
+    }
+
+    #[test]
+    fn utf8_bom_declares_cp932() {
+        let b = dxf_utf8_bom();
+        let s = std::str::from_utf8(b.strip_prefix(b"\xEF\xBB\xBF").unwrap()).unwrap();
+        assert!(
+            s.contains("$DWGCODEPAGE\r\n  3\r\nANSI_932\r\n") && s.contains("エントランスホール")
+        );
+    }
+
+    /// DWG を書き直しても同じバイト列になる（committed_files_are_current の前提）。
+    #[test]
+    fn dwg_is_deterministic() {
+        assert!(dwg_r2018() == dwg_r2018());
     }
 }

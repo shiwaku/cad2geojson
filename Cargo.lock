@@ -225,6 +225,7 @@ version = "0.1.0"
 dependencies = [
  "acadrust 0.6.4",
  "dwg2geo",
+ "encoding_rs",
  "thiserror 2.0.21",
 ]
 
